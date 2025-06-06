@@ -1,0 +1,1 @@
+Folder được sử dụng để lưu trữ các file upload từ client.
