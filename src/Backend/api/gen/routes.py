@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from services.llm.generator import GeneratorService
-from typing import Dict, Optional, Any
-from .schemas import WebResults, WebSearchResponse
+from typing import Dict, Optional
+from .schemas import WebResults
 
 router = APIRouter()
 gen_service = GeneratorService()
