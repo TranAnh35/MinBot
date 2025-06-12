@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from services.llm.generator import GeneratorService
+from services.conversation.service import ConversationService
 from typing import Dict, Optional
 from .schemas import WebResults
 
 router = APIRouter()
 gen_service = GeneratorService()
+conversation_service = ConversationService()
 
 @router.get("/gen_content", response_model=Dict[str, str])
 async def generate_content(
@@ -16,13 +18,21 @@ async def generate_content(
 ) -> Dict[str, str]:
     """Tạo nội dung dựa trên prompt và các ngữ cảnh bổ sung."""
     try:
+        conversation_history = ""
+        if conversation_id:
+            conversation_history = conversation_service.format_conversation_for_context(conversation_id, max_messages=10)
+            
         content = await gen_service.generate_content(
-            prompt, 
-            conversation_id, 
-            rag_response, 
-            web_response, 
+            prompt,
+            conversation_history,
+            rag_response,
+            web_response,
             file_response
         )
+
+        if conversation_id:
+            conversation_service.add_message(conversation_id, "assistant", content)
+
         return {"content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error generating content: {str(e)}")
@@ -46,7 +56,7 @@ async def merge_context(web_results: WebResults) -> Dict[str, str]:
         if not search_results:
             return {"content": "Không có kết quả tìm kiếm để xử lý."}
         
-        content = await gen_service.merge_context(search_results)
+        content = await gen_service.merge_context_from_search(search_results)
         return {"content": content}
         
     except Exception as e:
