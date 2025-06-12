@@ -44,18 +44,42 @@ export const generateContent = async (data: GenerateContentRequest): Promise<Gen
 
   // console.log(webResponse.data);
 
-  // Gọi API LLM với prompt bao gồm nội dung file
-  const llmResponse = await api.get('/generate/gen_content', {
-    params: {
+  try {
+    // Kiểm tra conversation_id trước khi gửi request
+    if (data.conversationId && typeof data.conversationId !== 'string') {
+      console.error("Lỗi: conversation_id không hợp lệ:", data.conversationId);
+      throw new Error("ID cuộc trò chuyện không hợp lệ");
+    }
+    
+    // Thêm logs để debug
+    console.log("Gửi yêu cầu tới LLM API với:", {
       prompt: data.input,
-      rag_response: ragResponse.data.response,
-      file_response: fileContents,
-      web_response: webResponse?.data.content,
-      conversation_id: data.conversationId
-    },
-  });
+      hasFileContent: !!fileContents,
+      hasWebResponse: !!webResponse?.data?.content,
+      conversationId: data.conversationId
+    });
+    
+    // Gọi API LLM với prompt bao gồm nội dung file
+    const llmResponse = await api.get('/generate/gen_content', {
+      params: {
+        prompt: data.input,
+        rag_response: ragResponse.data.response,
+        file_response: fileContents,
+        web_response: webResponse?.data.content,
+        conversation_id: data.conversationId
+      },
+    });
 
-  return { content: llmResponse.data.content };
+    if (!llmResponse?.data?.content) {
+      console.warn("Cảnh báo: Phản hồi từ API không có nội dung");
+      return { content: "Xin lỗi, tôi không thể tạo phản hồi lúc này. Vui lòng thử lại sau." };
+    }
+
+    return { content: llmResponse.data.content };
+  } catch (error) {
+    console.error("Lỗi khi gọi API generateContent:", error);
+    throw error; // Ném lỗi để xử lý ở component
+  }
 };
 
 // Gọi API lấy danh sách file đã upload
@@ -139,13 +163,32 @@ export const renameConversation = async (conversationId: string, title: string):
 
 // Thêm message vào conversation với validation ở backend
 export const addMessage = async (conversationId: string, role: string, content: string, attachments?: any[]): Promise<any> => {
-  const response = await api.post('/conversations/message', {
-    conversation_id: conversationId,
-    role: role,
-    content: content,
-    attachments: attachments,
-  });
-  return response.data;
+  // Kiểm tra conversationId
+  if (!conversationId) {
+    console.error("Lỗi: Không có conversation_id khi gọi addMessage");
+    throw new Error("Không có conversation_id hợp lệ");
+  }
+  
+  try {
+    const response = await api.post('/conversations/message', {
+      conversation_id: conversationId,
+      role: role,
+      content: content,
+      attachments: attachments,
+    });
+    return response.data;
+  } catch (error: any) {
+    console.error(`Lỗi khi thêm message ${role} vào conversation ${conversationId}:`, error);
+    
+    // Xử lý lỗi chi tiết và throw lỗi có thông tin rõ ràng hơn
+    if (error.response) {
+      const status = error.response.status;
+      const detail = error.response.data?.detail || 'Lỗi không xác định';
+      throw new Error(`Lỗi ${status}: ${detail}`);
+    }
+    
+    throw error; // Throw error ban đầu nếu không có response
+  }
 };
 
 // Lấy tóm tắt conversation
