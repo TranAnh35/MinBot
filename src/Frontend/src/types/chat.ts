@@ -3,14 +3,16 @@ import { UploadedFile } from "./interface";
 export interface Message {
     id: string;
     content: string;
-    sender: 'user' | 'bot';
+    sender: 'user' | 'bot' | 'assistant';
     timestamp: Date;
+    sequence?: number; // Thêm sequence number để đảm bảo thứ tự
     file?: {
         name: string;
         type: string;
         size: number;
     };
     attachments?: UploadedFile[];
+    loading?: boolean;
 }
 
 export interface MessageListProps {
@@ -22,11 +24,15 @@ export interface MessageListProps {
     isTyping: boolean;
     setDisplayedContent: (content: string) => void;
     setIsTyping: (isTyping: boolean) => void;
+    onLoadMoreHistory?: () => void;
+    hasMoreHistory?: boolean;
+    isLoadingMoreHistory?: boolean;
 }
 
 export interface MessageContentProps {
     content: string;
     attachments?: UploadedFile[];
+    sender?: 'user' | 'bot' | 'assistant'; // Thêm sender để phân biệt cách render
 }
 
 export interface FileSelectorProps {
