@@ -19,23 +19,48 @@ async def generate_content(
     """Tạo nội dung dựa trên prompt và các ngữ cảnh bổ sung."""
     try:
         conversation_history = ""
+        
+        # Kiểm tra tính hợp lệ của conversation_id
         if conversation_id:
-            conversation_history = conversation_service.format_conversation_for_context(conversation_id, max_messages=10)
-            
+            try:
+                # Kiểm tra xem conversation có tồn tại không
+                conversation = conversation_service.get_conversation(conversation_id)
+                if not conversation:
+                    print(f"Warning: Conversation {conversation_id} không tồn tại")
+                else:
+                    # Tăng số lượng tin nhắn lấy về từ 10 lên 20
+                    conversation_history = conversation_service.format_conversation_for_context(conversation_id, max_messages=20)
+            except Exception as conv_error:
+                print(f"Warning: Lỗi khi lấy lịch sử hội thoại: {str(conv_error)}")
+                # Nếu lỗi, vẫn tiếp tục nhưng không có lịch sử
+                conversation_history = ""
+        
+        # Gọi service để tạo nội dung
         content = await gen_service.generate_content(
             prompt,
-            conversation_history,
+            conversation_id,  # Vẫn truyền conversation_id, bất kể có lỗi không
             rag_response,
             web_response,
             file_response
         )
 
+        # Lưu phản hồi vào conversation nếu có
         if conversation_id:
-            conversation_service.add_message(conversation_id, "assistant", content)
+            try:
+                # Sử dụng add_message_with_validation để tạo conversation nếu cần
+                result = conversation_service.add_message_with_validation(conversation_id, "assistant", content)
+                if not result.get("success"):
+                    print(f"Warning: Không thể lưu phản hồi: {result.get('error')}")
+            except Exception as add_msg_error:
+                print(f"Warning: Lỗi khi lưu phản hồi: {str(add_msg_error)}")
+                # Tiếp tục trả về nội dung dù không lưu được
 
         return {"content": content}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating content: {str(e)}")
+        print(f"Error in gen_content: {str(e)}")
+        # Trả về lỗi rõ ràng hơn để debug
+        error_message = f"Error generating content: {str(e)}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 @router.post("/merge_context", response_model=Dict[str, str])
 async def merge_context(web_results: WebResults) -> Dict[str, str]:

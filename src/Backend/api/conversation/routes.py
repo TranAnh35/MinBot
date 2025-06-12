@@ -47,9 +47,15 @@ async def get_conversation(conversation_id: str):
 @router.get("/{conversation_id}/history", response_model=Dict[str, Any])
 async def get_conversation_history(conversation_id: str, limit: int = 50, offset: int = 0):
     """Lấy lịch sử tin nhắn của một hội thoại với pagination."""
-    return conversation_service.get_formatted_conversation_history(
+    result = conversation_service.get_formatted_conversation_history(
         conversation_id, limit, offset
     )
+    
+    if not result.get("exists", True):
+        print(f"Warning: Conversation {conversation_id} không tồn tại khi lấy lịch sử")
+        # Vẫn trả về kết quả rỗng thay vì lỗi 404 để đảm bảo UX tốt
+    
+    return result
 
 @router.get("/user/{user_id}", response_model=Dict[str, List[Dict]])
 async def list_user_conversations(user_id: str):
@@ -59,10 +65,10 @@ async def list_user_conversations(user_id: str):
 
 @router.delete("/{conversation_id}", response_model=Dict[str, bool])
 async def delete_conversation(conversation_id: str):
-    """Xóa một hội thoại."""
+    """Xóa một hội thoại và thư mục của nó trong upload/conversations."""
     success = conversation_service.delete_conversation(conversation_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại")
+        raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại hoặc không thể xóa")
     return {"success": True}
 
 @router.get("/user/{user_id}/stats", response_model=Dict[str, Any])

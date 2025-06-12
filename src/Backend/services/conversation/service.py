@@ -1,14 +1,16 @@
 from typing import List, Dict, Optional, Any
 from services.conversation.formatter import ConversationFormatter
 from services.conversation.database_manager import ConversationDatabaseManager
+from services.conversation.memory_service import MemoryService
 from datetime import datetime
 
 
 class ConversationService:
     
     def __init__(self) -> None:
-        """Khởi tạo dịch vụ hội thoại với ConversationDatabaseManager."""
+        """Khởi tạo dịch vụ hội thoại với ConversationDatabaseManager và MemoryService."""
         self.db_manager = ConversationDatabaseManager()
+        self.memory_service = MemoryService()
     
     def create_conversation(self, user_id: str) -> str:
         """Tạo một hội thoại mới cho người dùng."""
@@ -28,7 +30,13 @@ class ConversationService:
         success = self.db_manager.add_message(conversation_id, role, content)
         
         if success and role == "user":
+            # Cập nhật tiêu đề conversation tự động
             self.db_manager.auto_update_conversation_title(conversation_id, content)
+            
+            # Trích xuất và lưu thông tin vào memory
+            extracted_entities = self.memory_service.extract_and_save_from_message(conversation_id, content)
+            if extracted_entities:
+                print(f"Extracted entities from message: {extracted_entities}")
         
         return success
     
@@ -45,19 +53,72 @@ class ConversationService:
         return self.db_manager.list_conversations(user_id)
     
     def delete_conversation(self, conversation_id: str) -> bool:
-        """Xóa một hội thoại."""
-        return self.db_manager.delete_conversation(conversation_id)
+        """Xóa một hội thoại và thư mục của nó trong upload/conversations."""
+        # Xóa conversation từ database
+        db_success = self.db_manager.delete_conversation(conversation_id)
+        
+        # Xóa thư mục của conversation nếu tồn tại
+        try:
+            import os
+            import shutil
+            
+            # Sử dụng đường dẫn tuyệt đối
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            conversation_folder = os.path.join(base_dir, "upload", "conversations", conversation_id)
+            
+            if os.path.exists(conversation_folder) and os.path.isdir(conversation_folder):
+                shutil.rmtree(conversation_folder)  # Xóa cả thư mục và mọi tệp bên trong
+                print(f"Đã xóa thư mục conversation: {conversation_folder}")
+        except Exception as e:
+            print(f"Cảnh báo: Không thể xóa thư mục conversation: {str(e)}")
+            # Tiếp tục kể cả khi xóa thư mục thất bại
+            
+        return db_success
     
     def rename_conversation(self, conversation_id: str, title: str) -> bool:
         """Đổi tên một hội thoại."""
         return self.db_manager.rename_conversation(conversation_id, title)
     
-    def format_conversation_for_context(self, conversation_id: str, max_messages: int = 5) -> str:
+    def format_conversation_for_context(self, conversation_id: str, max_messages: int = 20) -> str:
         """Định dạng lịch sử hội thoại để sử dụng làm ngữ cảnh cho mô hình ngôn ngữ.
-        Tối ưu hóa lịch sử hội thoại bằng cách giảm kích thước để phù hợp với giới hạn token."""
-
-        messages = self.get_conversation_history(conversation_id, max_messages)
-        return ConversationFormatter.format(messages, max_messages)
+        
+        Tối ưu hóa lịch sử hội thoại bằng cách lấy nhiều tin nhắn gần đây và định dạng chúng
+        thành một chuỗi dễ đọc. Nếu có nhiều tin nhắn, system sẽ thêm tóm tắt ngữ cảnh.
+        
+        Args:
+            conversation_id: ID của hội thoại
+            max_messages: Số lượng tin nhắn tối đa để đưa vào context
+            
+        Returns:
+            Chuỗi lịch sử hội thoại đã được định dạng
+        """
+        # Lấy tất cả tin nhắn của cuộc hội thoại
+        messages = self.get_conversation_history(conversation_id, max_messages * 2)
+        
+        # Lấy thông tin cuộc hội thoại
+        conversation_info = self.get_conversation(conversation_id)
+        
+        formatted_history = ""
+        
+        # Thêm thông tin memory về người dùng (nếu có)
+        memory_context = self.memory_service.format_memory_for_context(conversation_id)
+        if memory_context:
+            formatted_history += memory_context
+        
+        # Thêm thông tin về cuộc hội thoại
+        if conversation_info:
+            title = conversation_info.get("title", "Cuộc trò chuyện mới")
+            total_messages = self.db_manager.count_conversation_messages(conversation_id)
+            
+            # Thêm tóm tắt conversation vào đầu context
+            formatted_history += f"=== Thông tin hội thoại ===\n"
+            formatted_history += f"Tiêu đề: {title}\n"
+            formatted_history += f"Tổng số tin nhắn: {total_messages}\n\n"
+        
+        # Format lịch sử tin nhắn
+        formatted_history += ConversationFormatter.format(messages, max_messages)
+        
+        return formatted_history
     
     def get_conversation_stats(self, user_id: str) -> Dict[str, Any]:
         """Lấy thống kê conversations của user."""
@@ -66,6 +127,12 @@ class ConversationService:
     def get_formatted_conversation_history(self, conversation_id: str, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
         """Lấy lịch sử conversation đã được format cho frontend với pagination."""
         try:
+            # Kiểm tra xem conversation có tồn tại không
+            conversation = self.db_manager.get_conversation(conversation_id)
+            if not conversation:
+                print(f"Warning: Không tìm thấy conversation {conversation_id} khi lấy lịch sử")
+                return {"messages": [], "has_more": False, "total_count": 0, "exists": False}
+            
             raw_messages = self.db_manager.get_conversation_history(conversation_id, limit, offset)
             total_count = self.db_manager.count_conversation_messages(conversation_id)
             
@@ -84,10 +151,11 @@ class ConversationService:
                 "messages": formatted_messages,
                 "has_more": total_count > offset + len(raw_messages),
                 "total_count": total_count,
+                "exists": True
             }
         except Exception as e:
             print(f"Lỗi khi format conversation history: {str(e)}")
-            return {"messages": [], "has_more": False, "total_count": 0}
+            return {"messages": [], "has_more": False, "total_count": 0, "exists": False}
     
     def add_message_with_validation(self, conversation_id: str, role: str, content: str, attachments: Optional[list] = None) -> Dict[str, Any]:
         """Thêm message với validation và trả về thông tin chi tiết."""

@@ -12,7 +12,7 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, sender, attach
     }
 
     return (
-      <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {attachments.map((file, index) => (
           <div key={index} className="bg-blue-100 rounded-lg p-2 flex items-center space-x-2 text-xs">
              <FileText className="h-5 w-5 text-blue-500" />
@@ -30,9 +30,13 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, sender, attach
   // Nếu là user message, render text và attachments
   if (sender === 'user') {
     return (
-      <div>
+      <div className="flex flex-col">
         {content && <div className="leading-relaxed whitespace-pre-wrap">{content}</div>}
-        {renderAttachments()}
+        {attachments && attachments.length > 0 && (
+          <div className="mt-2">
+            {renderAttachments()}
+          </div>
+        )}
       </div>
     );
   }
@@ -93,7 +97,7 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, sender, attach
     );
   }
 
-  return elements.length > 0 ? <>{elements}</> : (
+  const markdownContent = elements.length > 0 ? <>{elements}</> : (
     <div className="leading-relaxed">
       <ReactMarkdown
         components={{
@@ -104,6 +108,17 @@ const MessageContent: React.FC<MessageContentProps> = ({ content, sender, attach
       >
         {processedContent}
       </ReactMarkdown>
+    </div>
+  );
+
+  return (
+    <div>
+      {markdownContent}
+      {attachments && attachments.length > 0 && (
+        <div className="mt-3">
+          {renderAttachments()}
+        </div>
+      )}
     </div>
   );
 };

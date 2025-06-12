@@ -3,6 +3,7 @@ import threading
 import json
 import os
 import base64
+import binascii
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -90,10 +91,9 @@ class ConversationDatabaseManager:
                             # Lưu đường dẫn thay vì nội dung file
                             processed_attachments.append({
                                 "name": safe_filename,
-                                "path": file_path,
                                 "size": attachment.get("size")
                             })
-                        except (base64.binascii.Error, IOError) as e:
+                        except (binascii.Error, IOError) as e: # Catch binascii.Error directly
                             print(f"Lỗi khi xử lý file đính kèm {file_name}: {e}")
                             # Có thể thêm file lỗi vào danh sách để thông báo
                             processed_attachments.append({
@@ -288,8 +288,7 @@ class ConversationDatabaseManager:
                 return False
         except Exception as e:
             print(f"Lỗi khi xóa conversation: {str(e)}")
-            if 'conn' in locals() and conn:
-                conn.rollback()
+            # Không cần rollback vì đã ra khỏi context manager
             return False
 
     def auto_update_conversation_title(self, conversation_id: str, user_message: str) -> bool:

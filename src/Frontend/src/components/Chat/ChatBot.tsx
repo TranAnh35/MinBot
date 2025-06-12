@@ -6,7 +6,6 @@ import ChatInput from './ChatInput';
 import FileSelector from './FileSelector';
 import FileDropzone from './FileDropzone';
 import { GenerateContentRequest } from '../../types/chat';
-import { UploadedFile } from '../../types/interface';
 import { ConversationSidebar } from './ConversationSidebar';
 import { useSnackbar } from 'notistack';
 
@@ -108,19 +107,49 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     if (currentConversationId && !isSendingMessage) {
       loadConversationHistory(currentConversationId, 0);
     } else if (!currentConversationId) {
+      // Reset trạng thái khi không có conversation ID
       setMessages([]);
       setHasMoreHistory(false);
       setCurrentOffset(0);
+      setIsTyping(false);
+      setIsSending(false);
+      setCurrentBotMessage(null);
     }
   }, [currentConversationId, isSendingMessage, loadConversationHistory]);
+  
+  // Kiểm tra xem có cần tạo conversation mới sau khi load danh sách
+  useEffect(() => {
+    const checkAndCreateConversation = async () => {
+      // Chỉ thực hiện khi đã tải xong danh sách conversations
+      if (isConversationsLoaded && conversations.length === 0 && !isConversationsLoading) {
+        console.log("Không có conversation nào, đã sẵn sàng cho cuộc trò chuyện mới");
+        // Không tạo trực tiếp ở đây, chỉ hiển thị thông báo
+        enqueueSnackbar('Không có cuộc trò chuyện nào. Gõ tin nhắn để bắt đầu cuộc trò chuyện mới.', {
+          variant: 'info',
+          autoHideDuration: 5000
+        });
+      }
+    };
+    
+    checkAndCreateConversation();
+  }, [isConversationsLoaded, conversations.length, isConversationsLoading, enqueueSnackbar]);
 
   const handleCreateNewConversation = useCallback(async () => {
     setIsLoading(true);
     try {
       const newConversationId = await createConversation(userId);
+      if (!newConversationId) {
+        throw new Error("Conversation ID không hợp lệ");
+      }
+      
       setCurrentConversationId(newConversationId);
       setMessages([]);
-      loadConversations();
+      setHasMoreHistory(false);
+      setCurrentOffset(0);
+      
+      // Đảm bảo conversation mới được thêm vào danh sách
+      await loadConversations();
+      
       if (onCloseConversations) {
         onCloseConversations();
       }
@@ -128,6 +157,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         variant: 'success',
       });
     } catch (error) {
+      console.error("Lỗi tạo conversation mới:", error);
       enqueueSnackbar('Lỗi khi tạo cuộc trò chuyện mới', { 
         variant: 'error',
       });
@@ -168,30 +198,47 @@ export const ChatBot: React.FC<ChatBotProps> = ({
       await deleteConversation(conversationId);
       
       if (conversationId === currentConversationId) {
+        // Đặt lại trạng thái khi xóa conversation hiện tại
         setCurrentConversationId(undefined);
         setMessages([]);
+        setHasMoreHistory(false);
+        setCurrentOffset(0);
+        setIsLoading(false);
+        setIsTyping(false);
+        setIsSending(false); // Reset isSending state
+        setDisplayedContent('');
+        setStoppedContent(null);
+        setCurrentBotMessage(null);
       }
       
       // Tải lại danh sách cuộc trò chuyện
-      loadConversations();
-      enqueueSnackbar('Đã xóa cuộc trò chuyện', { 
-        variant: 'success',
-      });
+      await loadConversations();
+
+      // Kiểm tra nếu không còn conversation nào, hiển thị thông báo gợi ý
+      const updatedConversations = await listUserConversations(userId);
+      if (updatedConversations.length === 0) {
+        // Chắc chắn reset hoàn toàn state UI để tránh hiện tượng duplicate
+        setCurrentConversationId(undefined); 
+        setMessages([]);
+        setIsTyping(false);
+        setIsSending(false);
+        
+        enqueueSnackbar('Đã xóa cuộc trò chuyện cuối cùng. Gõ tin nhắn để bắt đầu cuộc trò chuyện mới.', { 
+          variant: 'info',
+          autoHideDuration: 5000,
+        });
+      } else {
+        enqueueSnackbar('Đã xóa cuộc trò chuyện', { 
+          variant: 'success',
+        });
+      }
     } catch (error) {
+      console.error('Lỗi khi xóa conversation:', error);
       enqueueSnackbar('Lỗi khi xóa cuộc trò chuyện', { 
         variant: 'error',
       });
     }
-  }, [currentConversationId, loadConversations, enqueueSnackbar]);
-
-  const convertFilesToUploadedFiles = (files: File[]): UploadedFile[] => {
-    return files.map((file, index) => ({
-      id: `${Date.now()}-${index}`,
-      name: file.name,
-      size: file.size,
-      type: file.type,
-    }));
-  };
+  }, [currentConversationId, loadConversations, enqueueSnackbar, userId]);
 
   // Đọc file thành base64
   const filesToBase64 = async (files: File[]) => {
@@ -210,6 +257,25 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     return Promise.all(promises);
   };
 
+  // Hàm chuẩn hóa message từ backend về đúng shape Message
+  function normalizeMessageFromBackend(msg: any, tempId: string): Message {
+    return {
+      id: msg.id || tempId,
+      content: msg.content,
+      sender: msg.sender || (msg.role === 'user' ? 'user' : (msg.role === 'assistant' ? 'assistant' : 'bot')),
+      timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+      attachments: Array.isArray(msg.attachments) ? msg.attachments.map((f: any, idx: number) => ({
+        id: f.id || `${tempId}-file-${idx}`,
+        name: f.name,
+        size: f.size,
+        type: f.type || '',
+        path: f.path,
+        error: f.error
+      })) : undefined,
+      loading: false,
+    };
+  }
+
   const handleSend = async () => {
     if (!input.trim() && chatFiles.length === 0) return;
     if (isSending) return;
@@ -217,40 +283,78 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     setIsSending(true);
     const userInput = input.trim();
     const filesToSend = [...chatFiles];
-    let attachments: { name: string; size: number; content: string }[] = [];
-    if (filesToSend.length > 0) {
-      attachments = await filesToBase64(filesToSend);
-    }
     setInput('');
     setChatFiles([]);
 
     let conversationId = currentConversationId;
     let isNewConversation = false;
 
+    // Luôn tạo conversation mới nếu không có, trước khi xử lý file
     if (!conversationId) {
         try {
+            // Log để debug
+            console.log("Không có conversation ID, tạo conversation mới...");
+            
+            // Tạo conversation mới khi chưa có
             const newConversationId = await createConversation(userId);
             if (!isMounted.current) return;
-            setCurrentConversationId(newConversationId);
+            
+            // Log để debug
+            console.log("Đã tạo conversation mới với ID:", newConversationId);
+            
+            // Cập nhật conversation ID ngay lập tức để tránh race condition
             conversationId = newConversationId;
             isNewConversation = true;
+            
+            // Đảm bảo rằng có conversation hợp lệ trước khi tiếp tục
+            if (!newConversationId) {
+                if (!isMounted.current) return;
+                throw new Error("Lỗi tạo conversation: ID không hợp lệ");
+            }
+            
+            // Cập nhật state ngay lập tức
+            setCurrentConversationId(newConversationId);
+            
+            // Reload danh sách conversation ngay lập tức để đồng bộ với backend
+            await loadConversations();
         } catch (error) {
             if (!isMounted.current) return;
+            console.error("Lỗi khi tạo conversation mới:", error);
             enqueueSnackbar('Lỗi khi tạo cuộc trò chuyện, thử lại sau', { variant: 'error' });
             setIsSending(false);
-            setInput(userInput);
-            // Re-add files if creation failed
+            setInput(userInput); // Khôi phục nội dung input
+            setChatFiles([...filesToSend]); // Khôi phục files đã chọn
             return;
         }
     }
+    
+    // Xử lý file đính kèm sau khi đã có conversationId
+    let attachments: { name: string; size: number; content: string }[] = [];
+    if (filesToSend.length > 0) {
+      try {
+        console.log("Xử lý file đính kèm cho conversation:", conversationId);
+        attachments = await filesToBase64(filesToSend);
+      } catch (fileError) {
+        console.error("Lỗi khi xử lý file đính kèm:", fileError);
+        // Vẫn tiếp tục gửi message mà không có file đính kèm
+        enqueueSnackbar('Có lỗi khi xử lý file đính kèm, tin nhắn sẽ được gửi mà không kèm file', { 
+          variant: 'warning',
+          autoHideDuration: 3000 
+        });
+      }
+    }
 
+    // Tạo ID với thêm chuỗi ngẫu nhiên để tránh trùng lặp
+    const uniqueUserMsgId = `temp_user_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const uniqueBotMsgId = `temp_bot_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    
     const tempUserMessage: Message = {
-      id: `temp_user_${Date.now()}`,
+      id: uniqueUserMsgId,
       content: userInput,
       sender: 'user',
       timestamp: new Date(),
       attachments: filesToSend.map((file, idx) => ({
-        id: `${Date.now()}-${idx}`,
+        id: `${uniqueUserMsgId}-file-${idx}`,
         name: file.name,
         size: file.size,
         type: file.type,
@@ -258,24 +362,66 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     };
 
     const tempBotMessage: Message = {
-        id: `temp_bot_${Date.now()}`,
+        id: uniqueBotMsgId,
         sender: 'assistant',
         content: '',
         timestamp: new Date(),
         loading: true,
     };
     
+    // Cập nhật UI ngay lập tức
     setMessages((prevMessages) => [...prevMessages, tempUserMessage, tempBotMessage]);
 
+    // Sử dụng một khối try-catch chính để bao quanh toàn bộ logic
     try {
-        // Gửi tin nhắn người dùng và không đợi
-        addMessage(conversationId, 'user', userInput, attachments.length > 0 ? attachments : undefined)
-            .then(response => {
-                if (isMounted.current && response.success && response.message) {
-                    setMessages(prev => prev.map(m => m.id === tempUserMessage.id ? { ...m, ...response.message } : m));
+        // Kiểm tra lại conversationId một lần nữa để đảm bảo an toàn
+        if (!conversationId) {
+            throw new Error("Không có conversation ID hợp lệ để gửi tin nhắn");
+        }
+        
+        console.log("Bắt đầu gửi tin nhắn đến conversation:", conversationId);
+        console.log("File đính kèm:", attachments.length);
+        
+        // Gửi tin nhắn người dùng 
+        try {
+            const userMessageResponse = await addMessage(
+                conversationId, 
+                'user', 
+                userInput, 
+                attachments.length > 0 ? attachments : undefined
+            );
+            
+            if (isMounted.current) {
+                if (userMessageResponse.success && userMessageResponse.message) {
+                    console.log("Tin nhắn người dùng đã lưu thành công:", userMessageResponse.message.id);
+                    const normMsg = normalizeMessageFromBackend(userMessageResponse.message, tempUserMessage.id);
+                    setMessages(prev => prev.map(m => m.id === tempUserMessage.id ? normMsg : m));
+                } else if (userMessageResponse.note === 'Duplicate message detected' && userMessageResponse.message) {
+                    console.log("Phát hiện tin nhắn trùng lặp:", userMessageResponse.message.id);
+                    const normMsg = normalizeMessageFromBackend(userMessageResponse.message, tempUserMessage.id);
+                    setMessages(prev => prev.map(m => m.id === tempUserMessage.id ? normMsg : m));
+                } else {
+                    console.warn("Phản hồi khi lưu tin nhắn không như mong đợi:", userMessageResponse);
                 }
-            });
+            }
+        } catch (userMsgError) {
+            console.error("Lỗi khi lưu tin nhắn người dùng:", userMsgError);
+            // Không dừng luồng chính, vẫn tiếp tục gọi AI
+            // Tin nhắn vẫn hiển thị trong UI nhưng có thể không được lưu DB
+        }
 
+        // Bật trạng thái "đang nhập" 
+        setCurrentBotMessage(tempBotMessage);
+        setIsTyping(true);
+
+        // Kiểm tra lại conversationId trước khi gửi yêu cầu tới LLM
+        if (!conversationId) {
+            console.error("Không có conversation ID hợp lệ để gửi đến LLM");
+            throw new Error("Không có conversation ID hợp lệ để gửi đến LLM");
+        }
+        
+        console.log("Gửi yêu cầu tới LLM với conversation ID:", conversationId);
+        
         const requestData: GenerateContentRequest = {
             input: userInput,
             files: filesToSend.length > 0 ? filesToSend : undefined,
@@ -283,41 +429,89 @@ export const ChatBot: React.FC<ChatBotProps> = ({
             conversationId: conversationId
         };
         
-        // This is where we call the backend
+        // Gọi API để lấy phản hồi từ LLM
         const llmResponse = await generateContent(requestData);
 
-        if (isMounted.current && llmResponse.content) {
-            const finalBotMessage: Message = {
-                ...tempBotMessage,
-                content: llmResponse.content,
-                loading: false,
-                id: `bot_${Date.now()}`,
-            };
+        if (isMounted.current) {
+            if (llmResponse?.content) {
+                const finalBotMessage: Message = {
+                    ...tempBotMessage,
+                    content: llmResponse.content,
+                    loading: false,
+                    id: `bot_${Date.now()}`,
+                };
 
-            setMessages(prev => prev.map(m => m.id === tempBotMessage.id ? finalBotMessage : m));
-            
-            // Persist bot message
-            addMessage(conversationId, 'assistant', llmResponse.content)
-              .then(response => {
-                  if (isMounted.current && response.success && response.message) {
-                      setMessages(prev => prev.map(m => m.id === finalBotMessage.id ? { ...m, ...response.message } : m));
-                  }
-              });
+                setMessages(prev => prev.map(m => m.id === tempBotMessage.id ? finalBotMessage : m));
+                
+                // Tắt trạng thái đang nhập
+                setIsTyping(false);
+                setCurrentBotMessage(null);
+                
+                // Lưu phản hồi bot vào conversation history
+                try {
+                    // Kiểm tra lại conversationId
+                    if (!conversationId) {
+                        throw new Error("Không có conversation ID hợp lệ để lưu phản hồi bot");
+                    }
+                    
+                    console.log("Lưu phản hồi bot cho conversation ID:", conversationId);
+                    
+                    const botMsgResponse = await addMessage(conversationId, 'assistant', llmResponse.content);
+                    
+                    if (isMounted.current) {
+                        if (botMsgResponse.success && botMsgResponse.message) {
+                            console.log("Đã lưu tin nhắn bot thành công:", botMsgResponse.message.id);
+                            const normMsg = normalizeMessageFromBackend(botMsgResponse.message, finalBotMessage.id);
+                            setMessages(prev => prev.map(m => m.id === finalBotMessage.id ? normMsg : m));
+                        } else {
+                            console.warn("Lưu tin nhắn bot không thành công hoặc không có phản hồi:", botMsgResponse);
+                        }
+                    }
+                } catch (botMsgError) {
+                    console.error('Lỗi khi lưu phản hồi bot:', botMsgError);
+                    // Tin nhắn bot vẫn hiển thị nhưng có thể không được lưu vào DB
+                }
 
-            if (isNewConversation) {
-                loadConversations();
+                // Nếu tạo conversation mới, cập nhật lại danh sách
+                if (isNewConversation) {
+                    loadConversations();
+                }
+            } else {
+                // Trường hợp phản hồi rỗng
+                setIsTyping(false);
+                setCurrentBotMessage(null);
+                setMessages(prev => prev.filter(m => m.id !== tempBotMessage.id));
+                enqueueSnackbar('Không thể tạo phản hồi từ AI', { variant: 'warning' });
             }
-        } else {
-             // Handle case where content is empty or error
-             setMessages(prev => prev.filter(m => m.id !== tempBotMessage.id));
         }
-
     } catch (error) {
         if (isMounted.current) {
-            enqueueSnackbar('Lỗi khi gửi tin nhắn hoặc tạo phản hồi', { variant: 'error' });
-            // Remove user and bot temp messages on error
-            setMessages(prev => prev.filter(m => m.id !== tempUserMessage.id && m.id !== tempBotMessage.id));
+            // Dừng trạng thái typing và xóa tin nhắn tạm khi có lỗi
+            setIsTyping(false);
+            setCurrentBotMessage(null);
+            
+            console.error('Lỗi trong quy trình chat:', error);
+            
+            // Hiển thị thông báo lỗi cụ thể hơn
+            const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
+            enqueueSnackbar(`Lỗi: ${errorMessage}`, { 
+                variant: 'error',
+                autoHideDuration: 5000
+            });
+            
+            // Nếu không có conversation ID hợp lệ, tạo mới
+            if (!currentConversationId && !conversationId) {
+                console.log("Không còn conversation nào, sẽ tạo mới khi gửi tin nhắn tiếp theo");
+                enqueueSnackbar('Không có cuộc trò chuyện nào. Gõ tin nhắn để bắt đầu cuộc trò chuyện mới', {
+                    variant: 'info',
+                    autoHideDuration: 5000
+                });
+            }
+            
+            // Lưu message gốc khi có lỗi
+            setMessages(prev => prev.filter(m => m.id !== tempBotMessage.id));
             setInput(userInput);
+            setChatFiles([...filesToSend]);
         }
     } finally {
         if (isMounted.current) {

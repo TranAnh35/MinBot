@@ -11,13 +11,11 @@ class GoogleSearchClient:
     def __init__(self):
         self.api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
         self.cx = os.getenv("GOOGLE_SEARCH_ID")
+        if not self.api_key or not self.cx:
+            raise ValueError("Lỗi: Thiếu GOOGLE_SEARCH_API_KEY hoặc GOOGLE_SEARCH_ID trong file .env")
 
     def search(self, query: str, num_results: int = 4, filter_by: Optional[str] = None, site_restrict: Optional[str] = None) -> List[Dict]:
         """Gọi Google Search API."""
-        if not self.api_key or not self.cx:
-            print("Lỗi: Thiếu GOOGLE_SEARCH_API_KEY hoặc GOOGLE_SEARCH_ID trong file .env")
-            return self._get_fallback_results(query)
-        
         try:
             encoded_query = urllib.parse.quote(query)
             url = f"https://www.googleapis.com/customsearch/v1?q={encoded_query}&key={self.api_key}&cx={self.cx}&num={num_results}"
