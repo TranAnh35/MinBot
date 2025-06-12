@@ -3,7 +3,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { solarizedlight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import ReactMarkdown from 'react-markdown';
 import { MessageContentProps } from '../../types/chat';
-import { FileText, Download } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 const MessageContent: React.FC<MessageContentProps> = ({ content, sender, attachments }) => {
   const renderAttachments = () => {

@@ -193,6 +193,23 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     }));
   };
 
+  // Đọc file thành base64
+  const filesToBase64 = async (files: File[]) => {
+    const promises = files.map(
+      (file) =>
+        new Promise<{ name: string; size: number; content: string }>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64 = (reader.result as string).split(',')[1];
+            resolve({ name: file.name, size: file.size, content: base64 });
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        })
+    );
+    return Promise.all(promises);
+  };
+
   const handleSend = async () => {
     if (!input.trim() && chatFiles.length === 0) return;
     if (isSending) return;
@@ -200,8 +217,10 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     setIsSending(true);
     const userInput = input.trim();
     const filesToSend = [...chatFiles];
-    const attachments = convertFilesToUploadedFiles(filesToSend);
-    
+    let attachments: { name: string; size: number; content: string }[] = [];
+    if (filesToSend.length > 0) {
+      attachments = await filesToBase64(filesToSend);
+    }
     setInput('');
     setChatFiles([]);
 
@@ -230,7 +249,12 @@ export const ChatBot: React.FC<ChatBotProps> = ({
       content: userInput,
       sender: 'user',
       timestamp: new Date(),
-      attachments: attachments.length > 0 ? attachments : undefined,
+      attachments: filesToSend.map((file, idx) => ({
+        id: `${Date.now()}-${idx}`,
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      })),
     };
 
     const tempBotMessage: Message = {
@@ -245,7 +269,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
 
     try {
         // Gửi tin nhắn người dùng và không đợi
-        addMessage(conversationId, 'user', userInput, tempUserMessage.attachments)
+        addMessage(conversationId, 'user', userInput, attachments.length > 0 ? attachments : undefined)
             .then(response => {
                 if (isMounted.current && response.success && response.message) {
                     setMessages(prev => prev.map(m => m.id === tempUserMessage.id ? { ...m, ...response.message } : m));
@@ -267,7 +291,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
                 ...tempBotMessage,
                 content: llmResponse.content,
                 loading: false,
-                id: `bot_${Date.now()}`, // Final ID
+                id: `bot_${Date.now()}`,
             };
 
             setMessages(prev => prev.map(m => m.id === tempBotMessage.id ? finalBotMessage : m));
