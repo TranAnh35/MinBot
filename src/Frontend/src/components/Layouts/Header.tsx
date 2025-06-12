@@ -17,7 +17,7 @@ export const Header: React.FC<HeaderProps> = ({ onUploadClick, onSettingsClick, 
                     <Button variant="ghost" size="icon" onClick={onConversationsClick}>
                         <Menu className="h-6 w-6" />
                     </Button>
-                    <h1 className="text-xl font-semibold">Gemini RAG Chat</h1>
+                    <h1 className="text-xl font-semibold">MinBot</h1>
                 </div>
 
                 <div className="flex items-center space-x-2">
