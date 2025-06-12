@@ -1,7 +1,7 @@
 import api from '../libs/axios';
 import { GenerateContentResponse } from '../types/api';
 import { UploadedFile } from '../types/interface';
-import { GenerateContentRequest, Conversation, Message } from '../types/chat';
+import { GenerateContentRequest, Conversation } from '../types/chat';
 
 // Gọi API tạo nội dung từ LLM và RAG
 export const generateContent = async (data: GenerateContentRequest): Promise<GenerateContentResponse> => {
@@ -112,18 +112,11 @@ export const createConversation = async (userId: string): Promise<string> => {
   return response.data.conversation_id;
 };
 
-export const getConversationHistory = async (conversationId: string, limit: number = 10): Promise<Message[]> => {
-  const response = await api.get<{ messages: any[] }>(`/conversations/${conversationId}/history`, {
-    params: { limit }
+export const getConversationHistory = async (conversationId: string, limit: number = 50, offset: number = 0): Promise<any> => {
+  const response = await api.get(`/conversations/${conversationId}/history`, {
+    params: { limit, offset },
   });
-  
-  // Chuyển đổi dữ liệu từ backend (role: "user"/"assistant") sang dạng frontend (sender: "user"/"bot")
-  return response.data.messages.map(message => ({
-    id: message.timestamp, // Sử dụng timestamp làm ID nếu không có ID
-    content: message.content,
-    sender: message.role === "user" ? "user" : "bot", // Chuyển đổi role thành sender
-    timestamp: new Date(message.timestamp)
-  }));
+  return response.data;
 };
 
 export const listUserConversations = async (userId: string): Promise<Conversation[]> => {
@@ -142,4 +135,27 @@ export const renameConversation = async (conversationId: string, title: string):
     title: title
   });
   return response.data.success;
+};
+
+// Thêm message vào conversation với validation ở backend
+export const addMessage = async (conversationId: string, role: string, content: string, attachments?: any[]): Promise<any> => {
+  const response = await api.post('/conversations/message', {
+    conversation_id: conversationId,
+    role: role,
+    content: content,
+    attachments: attachments,
+  });
+  return response.data;
+};
+
+// Lấy tóm tắt conversation
+export const getConversationSummary = async (conversationId: string): Promise<any> => {
+  const response = await api.get(`/conversations/${conversationId}/summary`);
+  return response.data;
+};
+
+// Refresh conversation data (để sync với database)
+export const refreshConversation = async (conversationId: string): Promise<any> => {
+  const response = await api.get(`/conversations/${conversationId}`);
+  return response.data;
 };
