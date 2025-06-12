@@ -1,6 +1,8 @@
 import sqlite3
 import threading
 import json
+import os
+import base64
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -60,8 +62,45 @@ class ConversationDatabaseManager:
             return False
 
     def add_message(self, conversation_id: str, role: str, content: str, attachments: Optional[List[Dict]] = None) -> bool:
-        """Thêm một message vào conversation."""
+        """Thêm một message vào conversation và xử lý file đính kèm."""
         try:
+            processed_attachments = []
+            if attachments:
+                # Đường dẫn thư mục để lưu file cho conversation này
+                upload_dir = os.path.join("upload", "conversations", conversation_id)
+                os.makedirs(upload_dir, exist_ok=True)
+
+                for attachment in attachments:
+                    file_content_base64 = attachment.get("content")
+                    file_name = attachment.get("name")
+
+                    if file_content_base64 and file_name:
+                        try:
+                            # Giải mã base64
+                            file_content = base64.b64decode(file_content_base64)
+                            
+                            # Tạo đường dẫn file an toàn
+                            safe_filename = "".join(c for c in file_name if c.isalnum() or c in ('.', '_', '-')).rstrip()
+                            file_path = os.path.join(upload_dir, safe_filename)
+
+                            # Lưu file
+                            with open(file_path, "wb") as f:
+                                f.write(file_content)
+
+                            # Lưu đường dẫn thay vì nội dung file
+                            processed_attachments.append({
+                                "name": safe_filename,
+                                "path": file_path,
+                                "size": attachment.get("size")
+                            })
+                        except (base64.binascii.Error, IOError) as e:
+                            print(f"Lỗi khi xử lý file đính kèm {file_name}: {e}")
+                            # Có thể thêm file lỗi vào danh sách để thông báo
+                            processed_attachments.append({
+                                "name": file_name,
+                                "error": f"Failed to save: {e}"
+                            })
+
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -69,7 +108,7 @@ class ConversationDatabaseManager:
                 if not cursor.fetchone():
                     return False
                 
-                attachments_json = json.dumps(attachments) if attachments else None
+                attachments_json = json.dumps(processed_attachments) if processed_attachments else None
 
                 cursor.execute("""
                     INSERT INTO messages (conversation_id, role, content, timestamp, attachments)

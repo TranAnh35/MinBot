@@ -12,7 +12,7 @@ class GeneratorService:
         self.quick_responses = {
             "hello": "Xin chào! Tôi có thể giúp gì cho bạn?",
             "hi": "Chào bạn! Tôi có thể hỗ trợ gì cho bạn hôm nay?",
-            "xin chào": "Chào bạn! Tôi là ChatBot, tôi có thể giúp gì cho bạn?",
+            "xin chào": "Chào bạn! Tôi là MinBot, tôi có thể giúp gì cho bạn?",
             "chào": "Xin chào! Tôi có thể giúp gì cho bạn hôm nay?",
             "cảm ơn": "Không có gì, rất vui được giúp bạn!",
             "thank you": "Không có gì! Rất vui được giúp bạn.",

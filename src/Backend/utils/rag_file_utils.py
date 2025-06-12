@@ -13,11 +13,21 @@ def get_uploaded_files_info(upload_dir: str) -> Dict[str, float]:
     if not os.path.exists(upload_dir):
         os.makedirs(upload_dir, exist_ok=True)
         return files_info
+        
+    # Thêm tên thư mục con cần bỏ qua
+    excluded_dirs = ['conversations']
+
     for filename in os.listdir(upload_dir):
+        file_path = os.path.join(upload_dir, filename)
+
+        # Bỏ qua các thư mục con được chỉ định
+        if os.path.isdir(file_path) and filename in excluded_dirs:
+            continue
+            
         file_ext = Path(filename).suffix.lower()
         if file_ext not in config.SUPPORTED_EXTENSIONS:
             continue
-        file_path = os.path.join(upload_dir, filename)
+
         if os.path.isfile(file_path):
             try:
                 mtime = os.path.getmtime(file_path)
