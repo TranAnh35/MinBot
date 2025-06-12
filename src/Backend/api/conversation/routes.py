@@ -13,17 +13,17 @@ async def create_conversation(request: ConversationCreate):
     conversation_id = conversation_service.create_conversation(request.user_id)
     return {"conversation_id": conversation_id}
 
-@router.post("/message", response_model=Dict[str, bool])
+@router.post("/message", response_model=Dict[str, Any])
 async def add_message(request: MessageCreate):
-    """Thêm tin nhắn vào hội thoại."""
-    success = conversation_service.add_message(
-        request.conversation_id,
-        request.role,
-        request.content
+    """Thêm tin nhắn vào hội thoại với validation."""
+    result = conversation_service.add_message_with_validation(
+        request.conversation_id, request.role, request.content, request.attachments
     )
-    if not success:
-        raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại")
-    return {"success": True}
+    if not result.get("success"):
+        error_detail = result.get("error", "Unknown error")
+        status_code = 404 if "not found" in error_detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=error_detail)
+    return result
 
 @router.post("/rename", response_model=Dict[str, bool])
 async def rename_conversation(request: ConversationRename):
@@ -44,11 +44,12 @@ async def get_conversation(conversation_id: str):
         raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại")
     return conversation
 
-@router.get("/{conversation_id}/history", response_model=Dict[str, List[Dict]])
-async def get_conversation_history(conversation_id: str, limit: int = 10):
-    """Lấy lịch sử tin nhắn của một hội thoại."""
-    messages = conversation_service.get_conversation_history(conversation_id, limit)
-    return {"messages": messages}
+@router.get("/{conversation_id}/history", response_model=Dict[str, Any])
+async def get_conversation_history(conversation_id: str, limit: int = 50, offset: int = 0):
+    """Lấy lịch sử tin nhắn của một hội thoại với pagination."""
+    return conversation_service.get_formatted_conversation_history(
+        conversation_id, limit, offset
+    )
 
 @router.get("/user/{user_id}", response_model=Dict[str, List[Dict]])
 async def list_user_conversations(user_id: str):
@@ -98,6 +99,22 @@ async def get_database_status():
             "database_type": "SQLite",
             "test_query_success": False
         }
+
+@router.get("/{conversation_id}/summary", response_model=Dict[str, Any])
+async def get_conversation_summary(conversation_id: str):
+    """Lấy tóm tắt thông tin conversation."""
+    summary = conversation_service.get_conversation_summary(conversation_id)
+    if "error" in summary:
+        raise HTTPException(status_code=404, detail=summary["error"])
+    return summary
+
+@router.delete("/{conversation_id}/messages", response_model=Dict[str, bool])
+async def clear_conversation_messages(conversation_id: str):
+    """Xóa tất cả messages trong conversation (giữ lại conversation)."""
+    success = conversation_service.db_manager.clear_conversation_messages(conversation_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Không thể xóa messages")
+    return {"success": True}
 
 @router.get("/database/info", response_model=Dict[str, Any])
 async def get_database_info():

@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 from contextlib import contextmanager
@@ -11,6 +12,24 @@ class ConversationDatabaseManager:
     def __init__(self, db_path: str = "vector_store.db") -> None:
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._run_migrations()
+
+    def _run_migrations(self):
+        """Chạy các migration cần thiết cho schema database."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Kiểm tra xem cột 'attachments' đã tồn tại trong bảng 'messages' chưa
+                cursor.execute("PRAGMA table_info(messages)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if 'attachments' not in columns:
+                    cursor.execute("ALTER TABLE messages ADD COLUMN attachments TEXT")
+                    print("Migration: Đã thêm cột 'attachments' vào bảng 'messages'.")
+                
+                conn.commit()
+        except Exception as e:
+            print(f"Lỗi khi chạy migration: {str(e)}")
 
     @contextmanager
     def get_connection(self):
@@ -40,7 +59,7 @@ class ConversationDatabaseManager:
             print(f"Lỗi khi tạo conversation: {str(e)}")
             return False
 
-    def add_message(self, conversation_id: str, role: str, content: str) -> bool:
+    def add_message(self, conversation_id: str, role: str, content: str, attachments: Optional[List[Dict]] = None) -> bool:
         """Thêm một message vào conversation."""
         try:
             with self.get_connection() as conn:
@@ -50,10 +69,12 @@ class ConversationDatabaseManager:
                 if not cursor.fetchone():
                     return False
                 
+                attachments_json = json.dumps(attachments) if attachments else None
+
                 cursor.execute("""
-                    INSERT INTO messages (conversation_id, role, content, timestamp)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                """, (conversation_id, role, content))
+                    INSERT INTO messages (conversation_id, role, content, timestamp, attachments)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+                """, (conversation_id, role, content, attachments_json))
                 
                 cursor.execute("""
                     UPDATE conversations 
@@ -102,7 +123,7 @@ class ConversationDatabaseManager:
                     return None
                 
                 cursor.execute("""
-                    SELECT role, content, timestamp
+                    SELECT role, content, timestamp, attachments
                     FROM messages 
                     WHERE conversation_id = ?
                     ORDER BY timestamp ASC
@@ -110,10 +131,12 @@ class ConversationDatabaseManager:
                 
                 messages = []
                 for msg_row in cursor.fetchall():
+                    attachments = json.loads(msg_row["attachments"]) if msg_row["attachments"] else None
                     messages.append({
                         "role": msg_row["role"],
                         "content": msg_row["content"],
-                        "timestamp": msg_row["timestamp"]
+                        "timestamp": msg_row["timestamp"],
+                        "attachments": attachments
                     })
                 
                 return {
@@ -128,8 +151,8 @@ class ConversationDatabaseManager:
             print(f"Lỗi khi lấy conversation: {str(e)}")
             return None
 
-    def get_conversation_history(self, conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Lấy lịch sử messages của một conversation."""
+    def get_conversation_history(self, conversation_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Lấy lịch sử messages của một conversation với hỗ trợ pagination (mới nhất trước)."""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -138,22 +161,26 @@ class ConversationDatabaseManager:
                 if not cursor.fetchone():
                     return []
                 
+                # Sắp xếp theo timestamp DESC để lấy tin nhắn mới nhất trước
                 cursor.execute("""
-                    SELECT role, content, timestamp
+                    SELECT role, content, timestamp, attachments
                     FROM messages 
                     WHERE conversation_id = ?
                     ORDER BY timestamp DESC
-                    LIMIT ?
-                """, (conversation_id, limit))
+                    LIMIT ? OFFSET ?
+                """, (conversation_id, limit, offset))
                 
                 messages = []
                 for row in cursor.fetchall():
+                    attachments = json.loads(row["attachments"]) if row["attachments"] else None
                     messages.append({
                         "role": row["role"],
                         "content": row["content"],
-                        "timestamp": row["timestamp"]
+                        "timestamp": row["timestamp"],
+                        "attachments": attachments
                     })
                 
+                # Trả về theo thứ tự thời gian tăng dần để hiển thị
                 return list(reversed(messages))
         except Exception as e:
             print(f"Lỗi khi lấy conversation history: {str(e)}")
@@ -204,14 +231,26 @@ class ConversationDatabaseManager:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 
+                # Bắt đầu một transaction
+                cursor.execute("BEGIN")
+
+                # Xóa tất cả messages liên quan đến conversation
+                cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+                
+                # Xóa conversation
                 cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
                 
                 if cursor.rowcount > 0:
                     conn.commit()
                     return True
+                
+                # Nếu không có conversation nào bị xóa (ví dụ: ID không tồn tại), rollback
+                conn.rollback()
                 return False
         except Exception as e:
             print(f"Lỗi khi xóa conversation: {str(e)}")
+            if 'conn' in locals() and conn:
+                conn.rollback()
             return False
 
     def auto_update_conversation_title(self, conversation_id: str, user_message: str) -> bool:
@@ -277,4 +316,80 @@ class ConversationDatabaseManager:
                 "total_conversations": 0,
                 "total_messages": 0,
                 "last_activity": None
-            } 
+            }
+    
+    def count_conversation_messages(self, conversation_id: str) -> int:
+        """Đếm tổng số messages trong một conversation."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conversation_id,))
+                return cursor.fetchone()[0]
+        except Exception as e:
+            print(f"Lỗi khi đếm messages: {str(e)}")
+            return 0
+    
+    def get_latest_message(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Lấy message cuối cùng của một conversation."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT role, content, timestamp, attachments
+                    FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (conversation_id,))
+                row = cursor.fetchone()
+                if row:
+                    attachments = json.loads(row["attachments"]) if row["attachments"] else None
+                    return {
+                        "role": row["role"],
+                        "content": row["content"],
+                        "timestamp": row["timestamp"],
+                        "attachments": attachments
+                    }
+                return None
+        except Exception as e:
+            print(f"Lỗi khi lấy message cuối cùng: {str(e)}")
+            return None
+    
+    def get_recent_messages(self, conversation_id: str, count: int = 5) -> List[Dict[str, Any]]:
+        """Lấy một vài message gần đây để kiểm tra trùng lặp."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT role, content, timestamp, attachments
+                    FROM messages
+                    WHERE conversation_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (conversation_id, count))
+                
+                messages = []
+                for row in cursor.fetchall():
+                    attachments = json.loads(row["attachments"]) if row["attachments"] else None
+                    messages.append({
+                        "role": row["role"],
+                        "content": row["content"],
+                        "timestamp": row["timestamp"],
+                        "attachments": attachments
+                    })
+                return messages
+        except Exception as e:
+            print(f"Lỗi khi lấy messages gần đây: {str(e)}")
+            return []
+    
+    def clear_conversation_messages(self, conversation_id: str) -> bool:
+        """Xóa tất cả messages trong một conversation (không xóa conversation)."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Lỗi khi clear messages: {str(e)}")
+            return False

@@ -12,6 +12,7 @@ class MessageCreate(BaseModel):
     conversation_id: str
     role: str
     content: str
+    attachments: list = None
 
 class ConversationRename(BaseModel):
     conversation_id: str

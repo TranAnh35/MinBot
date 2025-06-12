@@ -36,9 +36,9 @@ class ConversationService:
         """Lấy thông tin chi tiết của một hội thoại."""
         return self.db_manager.get_conversation(conversation_id)
     
-    def get_conversation_history(self, conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Lấy lịch sử tin nhắn của một hội thoại."""
-        return self.db_manager.get_conversation_history(conversation_id, limit)
+    def get_conversation_history(self, conversation_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Lấy lịch sử tin nhắn của một hội thoại với hỗ trợ pagination."""
+        return self.db_manager.get_conversation_history(conversation_id, limit, offset)
     
     def list_conversations(self, user_id: str) -> List[Dict[str, Any]]:
         """Liệt kê tất cả hội thoại của một người dùng."""
@@ -62,6 +62,94 @@ class ConversationService:
     def get_conversation_stats(self, user_id: str) -> Dict[str, Any]:
         """Lấy thống kê conversations của user."""
         return self.db_manager.get_conversation_stats(user_id)
+    
+    def get_formatted_conversation_history(self, conversation_id: str, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """Lấy lịch sử conversation đã được format cho frontend với pagination."""
+        try:
+            raw_messages = self.db_manager.get_conversation_history(conversation_id, limit, offset)
+            total_count = self.db_manager.count_conversation_messages(conversation_id)
+            
+            formatted_messages = [
+                {
+                    "id": f"{msg['role']}_{msg['timestamp']}_{offset + i}",
+                    "content": msg["content"],
+                    "sender": "user" if msg["role"] == "user" else "bot",
+                    "timestamp": msg["timestamp"],
+                    "sequence": offset + i + 1,
+                }
+                for i, msg in enumerate(raw_messages)
+            ]
+            
+            return {
+                "messages": formatted_messages,
+                "has_more": total_count > offset + len(raw_messages),
+                "total_count": total_count,
+            }
+        except Exception as e:
+            print(f"Lỗi khi format conversation history: {str(e)}")
+            return {"messages": [], "has_more": False, "total_count": 0}
+    
+    def add_message_with_validation(self, conversation_id: str, role: str, content: str, attachments: Optional[list] = None) -> Dict[str, Any]:
+        """Thêm message với validation và trả về thông tin chi tiết."""
+        try:
+            if not all([conversation_id, role, content]):
+                return {"success": False, "error": "Missing required fields"}
+
+            if not self.db_manager.get_conversation(conversation_id):
+                try:
+                    # Tự động tạo conversation nếu không tồn tại, user_id được suy ra từ conversation_id
+                    user_id = conversation_id.rsplit('_', 1)[0]
+                    if not self.db_manager.create_conversation(conversation_id, user_id):
+                        return {"success": False, "error": "Failed to auto-create conversation"}
+                except IndexError:
+                    return {"success": False, "error": "Invalid conversation_id format for auto-creation"}
+
+            recent_messages = self.db_manager.get_recent_messages(conversation_id, 5)
+            for msg in recent_messages:
+                if msg["role"] == role and msg["content"] == content:
+                    # Bỏ qua kiểm tra trùng lặp nếu có file đính kèm
+                    if not attachments:
+                        return {"success": True, "note": "Duplicate message detected", "message": msg}
+
+            if self.db_manager.add_message(conversation_id, role, content, attachments):
+                if role == "user":
+                    self.db_manager.auto_update_conversation_title(conversation_id, content)
+                
+                new_message = self.db_manager.get_latest_message(conversation_id)
+                return {"success": True, "message": new_message}
+            
+            return {"success": False, "error": "Failed to add message"}
+        except Exception as e:
+            print(f"Lỗi khi thêm message: {str(e)}")
+            return {"success": False, "error": str(e)}
+    
+    def get_conversation_summary(self, conversation_id: str) -> Dict[str, Any]:
+        """Lấy tóm tắt conversation bao gồm thông tin cơ bản và message count."""
+        try:
+            conversation = self.db_manager.get_conversation(conversation_id)
+            if not conversation:
+                return {"error": "Conversation not found"}
+            
+            # Đếm số messages
+            message_count = self.db_manager.count_conversation_messages(conversation_id)
+            
+            # Lấy message cuối cùng
+            latest_message = self.db_manager.get_latest_message(conversation_id)
+            
+            return {
+                "conversation_id": conversation["conversation_id"],
+                "title": conversation["title"],
+                "user_id": conversation["user_id"],
+                "created_at": conversation["created_at"],
+                "updated_at": conversation["updated_at"],
+                "message_count": message_count,
+                "latest_message": latest_message,
+                "has_messages": message_count > 0
+            }
+            
+        except Exception as e:
+            print(f"Lỗi khi lấy conversation summary: {str(e)}")
+            return {"error": str(e)}
     
     def migrate_from_json_files(self, storage_dir: str = "storage/conversations") -> Dict[str, Any]:
         """Migration utility để chuyển dữ liệu từ JSON files sang database."""
