@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ChatBotProps, Message, Conversation } from '../../types/chat';
-import { generateContent, createConversation, getConversationHistory, listUserConversations, deleteConversation, renameConversation } from '../../services/api';
+import { generateContent, createConversation, getConversationHistory, listUserConversations, deleteConversation, renameConversation, addMessage } from '../../services/api';
 import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 import FileSelector from './FileSelector';
@@ -22,6 +22,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [displayedContent, setDisplayedContent] = useState<string>('');
   const [stoppedContent, setStoppedContent] = useState<string | null>(null);
   const [currentBotMessage, setCurrentBotMessage] = useState<Message | null>(null);
@@ -35,10 +36,22 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(undefined);
   const [isConversationsLoading, setIsConversationsLoading] = useState(false);
-  // State để theo dõi xem đã tải xong cuộc trò chuyện hay chưa
   const [isConversationsLoaded, setIsConversationsLoaded] = useState(false);
-  // State để theo dõi xem có đang trong quá trình gửi tin nhắn không
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [isLoadingMoreHistory, setIsLoadingMoreHistory] = useState(false);
+  
+  // State quản lý pagination, logic hoàn toàn dựa vào backend
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [currentOffset, setCurrentOffset] = useState(0);
+
+  // Ref để tránh cập nhật state trên component đã unmounted
+  const isMounted = useRef(true);
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
 
   const { enqueueSnackbar } = useSnackbar();
 
@@ -48,7 +61,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({
       const userConversations = await listUserConversations(userId);
       setConversations(userConversations);
     } catch (error) {
-      console.error('Error loading conversations:', error);
       enqueueSnackbar('Lỗi khi tải danh sách cuộc trò chuyện', { 
         variant: 'error',
       });
@@ -58,34 +70,47 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     }
   }, [userId, enqueueSnackbar]);
 
-  const loadConversationHistory = useCallback(async (conversationId: string) => {
-    setIsLoading(true);
+  const loadConversationHistory = useCallback(async (conversationId: string, offset = 0) => {
+    const isLoadingMore = offset > 0;
+    if (isLoadingMore) {
+      setIsLoadingMoreHistory(true);
+    } else {
+      setIsLoading(true);
+      setMessages([]); // Xóa tin nhắn cũ khi chuyển conversation
+    }
+
     try {
-      const history = await getConversationHistory(conversationId);
-      if (history && history.length > 0) {
-        setMessages(history);
-      } else {
-        setMessages([]);
+      const data = await getConversationHistory(conversationId, 50, offset);
+      if (data && data.messages) {
+        setMessages(prev => isLoadingMore ? [...data.messages, ...prev] : data.messages);
+        setHasMoreHistory(data.has_more);
+        setCurrentOffset(offset + data.messages.length);
       }
     } catch (error) {
-      console.error('Error loading conversation history:', error);
-      enqueueSnackbar('Lỗi khi tải lịch sử cuộc trò chuyện', { 
-        variant: 'error',
-      });
+      enqueueSnackbar('Lỗi khi tải lịch sử cuộc trò chuyện', { variant: 'error' });
     } finally {
       setIsLoading(false);
+      setIsLoadingMoreHistory(false);
     }
   }, [enqueueSnackbar]);
 
+  const loadMoreHistory = useCallback(() => {
+    if (currentConversationId && hasMoreHistory && !isLoadingMoreHistory) {
+      loadConversationHistory(currentConversationId, currentOffset);
+    }
+  }, [currentConversationId, hasMoreHistory, isLoadingMoreHistory, loadConversationHistory, currentOffset]);
+  
   useEffect(() => {
     loadConversations();
   }, [loadConversations]);
 
   useEffect(() => {
     if (currentConversationId && !isSendingMessage) {
-      loadConversationHistory(currentConversationId);
-    } else if (!currentConversationId && !isSendingMessage) {
+      loadConversationHistory(currentConversationId, 0);
+    } else if (!currentConversationId) {
       setMessages([]);
+      setHasMoreHistory(false);
+      setCurrentOffset(0);
     }
   }, [currentConversationId, isSendingMessage, loadConversationHistory]);
 
@@ -103,7 +128,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         variant: 'success',
       });
     } catch (error) {
-      console.error('Error creating new conversation:', error);
       enqueueSnackbar('Lỗi khi tạo cuộc trò chuyện mới', { 
         variant: 'error',
       });
@@ -133,7 +157,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         });
       }
     } catch (error) {
-      console.error('Error renaming conversation:', error);
       enqueueSnackbar('Lỗi khi đổi tên cuộc trò chuyện', { 
         variant: 'error',
       });
@@ -144,9 +167,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     try {
       await deleteConversation(conversationId);
       
-      // Nếu xóa cuộc trò chuyện hiện tại, hãy cập nhật UI
       if (conversationId === currentConversationId) {
-        // Không tự động tạo cuộc trò chuyện mới, chỉ xóa ID và làm sạch tin nhắn
         setCurrentConversationId(undefined);
         setMessages([]);
       }
@@ -157,7 +178,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         variant: 'success',
       });
     } catch (error) {
-      console.error('Error deleting conversation:', error);
       enqueueSnackbar('Lỗi khi xóa cuộc trò chuyện', { 
         variant: 'error',
       });
@@ -174,83 +194,116 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   };
 
   const handleSend = async () => {
-    if (!input.trim() || !isConversationsLoaded) return;
-  
+    if (!input.trim() && chatFiles.length === 0) return;
+    if (isSending) return;
+
+    setIsSending(true);
     const userInput = input.trim();
+    const filesToSend = [...chatFiles];
+    const attachments = convertFilesToUploadedFiles(filesToSend);
+    
     setInput('');
-    setIsLoading(true);
-    setIsSendingMessage(true);
+    setChatFiles([]);
 
     let conversationId = currentConversationId;
-    
+    let isNewConversation = false;
+
     if (!conversationId) {
-      try {
-        conversationId = await createConversation(userId);
-        setCurrentConversationId(conversationId);
-        loadConversations();
-      } catch (error) {
-        console.error('Error creating conversation:', error);
-        enqueueSnackbar('Lỗi khi tạo cuộc trò chuyện, thử lại sau', { 
-          variant: 'error',
-        });
-        setIsLoading(false);
-        setIsSendingMessage(false);
-        setInput(userInput);
-        return;
-      }
+        try {
+            const newConversationId = await createConversation(userId);
+            if (!isMounted.current) return;
+            setCurrentConversationId(newConversationId);
+            conversationId = newConversationId;
+            isNewConversation = true;
+        } catch (error) {
+            if (!isMounted.current) return;
+            enqueueSnackbar('Lỗi khi tạo cuộc trò chuyện, thử lại sau', { variant: 'error' });
+            setIsSending(false);
+            setInput(userInput);
+            // Re-add files if creation failed
+            return;
+        }
     }
 
-    const uploadedFilesArray = chatFiles.length > 0 ? convertFilesToUploadedFiles(chatFiles) : undefined;
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
+    const tempUserMessage: Message = {
+      id: `temp_user_${Date.now()}`,
       content: userInput,
       sender: 'user',
       timestamp: new Date(),
-      attachments: uploadedFilesArray,
+      attachments: attachments.length > 0 ? attachments : undefined,
     };
-  
-    setMessages((prev) => [...prev, userMessage]);
-  
+
+    const tempBotMessage: Message = {
+        id: `temp_bot_${Date.now()}`,
+        sender: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        loading: true,
+    };
+    
+    setMessages((prevMessages) => [...prevMessages, tempUserMessage, tempBotMessage]);
+
     try {
-      const requestData: GenerateContentRequest = {
-        input: userMessage.content,
-        files: chatFiles.length > 0 ? [...chatFiles] : undefined,
-        isWebSearchEnabled: isWebSearchEnabled,
-        conversationId: conversationId
-      };
-  
-      const data = await generateContent(requestData);
-      const botMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: data.content,
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setCurrentBotMessage(botMessage);
-      setDisplayedContent('');
-      setIsTyping(true);
-      setMessages((prev) => [...prev, botMessage]);
-  
-      setChatFiles([]);
-      
-      loadConversations();
+        // Gửi tin nhắn người dùng và không đợi
+        addMessage(conversationId, 'user', userInput, tempUserMessage.attachments)
+            .then(response => {
+                if (isMounted.current && response.success && response.message) {
+                    setMessages(prev => prev.map(m => m.id === tempUserMessage.id ? { ...m, ...response.message } : m));
+                }
+            });
+
+        const requestData: GenerateContentRequest = {
+            input: userInput,
+            files: filesToSend.length > 0 ? filesToSend : undefined,
+            isWebSearchEnabled: isWebSearchEnabled,
+            conversationId: conversationId
+        };
+        
+        // This is where we call the backend
+        const llmResponse = await generateContent(requestData);
+
+        if (isMounted.current && llmResponse.content) {
+            const finalBotMessage: Message = {
+                ...tempBotMessage,
+                content: llmResponse.content,
+                loading: false,
+                id: `bot_${Date.now()}`, // Final ID
+            };
+
+            setMessages(prev => prev.map(m => m.id === tempBotMessage.id ? finalBotMessage : m));
+            
+            // Persist bot message
+            addMessage(conversationId, 'assistant', llmResponse.content)
+              .then(response => {
+                  if (isMounted.current && response.success && response.message) {
+                      setMessages(prev => prev.map(m => m.id === finalBotMessage.id ? { ...m, ...response.message } : m));
+                  }
+              });
+
+            if (isNewConversation) {
+                loadConversations();
+            }
+        } else {
+             // Handle case where content is empty or error
+             setMessages(prev => prev.filter(m => m.id !== tempBotMessage.id));
+        }
+
     } catch (error) {
-      console.error('Error generating content:', error);
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        content: 'Sorry, something went wrong.',
-        sender: 'bot',
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
+        if (isMounted.current) {
+            enqueueSnackbar('Lỗi khi gửi tin nhắn hoặc tạo phản hồi', { variant: 'error' });
+            // Remove user and bot temp messages on error
+            setMessages(prev => prev.filter(m => m.id !== tempUserMessage.id && m.id !== tempBotMessage.id));
+            setInput(userInput);
+        }
     } finally {
-      setIsLoading(false);
-      setIsSendingMessage(false);
+        if (isMounted.current) {
+            setIsSending(false);
+        }
     }
   };
 
   const handleStopTyping = () => {
+    if (!isTyping) return;
     setIsTyping(false);
     setStoppedContent(displayedContent);
   };
@@ -259,13 +312,16 @@ export const ChatBot: React.FC<ChatBotProps> = ({
     <div className="flex flex-col h-[calc(100vh-4rem)] pt-16">
       <MessageList
         messages={messages}
-        isLoading={isLoading}
+        isLoading={isSending}
         currentBotMessage={currentBotMessage}
         displayedContent={displayedContent}
         stoppedContent={stoppedContent}
         isTyping={isTyping}
         setDisplayedContent={setDisplayedContent}
         setIsTyping={setIsTyping}
+        onLoadMoreHistory={loadMoreHistory}
+        hasMoreHistory={hasMoreHistory}
+        isLoadingMoreHistory={isLoadingMoreHistory}
       />
       {showFileSelector && (
         <FileSelector
@@ -282,7 +338,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         <ChatInput
           input={input}
           setInput={setInput}
-          isLoading={isLoading}
+          isLoading={isSending}
           isTyping={isTyping}
           isWebSearchEnabled={isWebSearchEnabled}
           chatFiles={chatFiles}
