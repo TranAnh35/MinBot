@@ -162,6 +162,8 @@ class AppManager:
                     "available": False
                 }
         
+        # Thêm thông tin version để phản ánh phiên bản ứng dụng (phù hợp API docs)
+        health_status["version"] = "1.0.0"
         return health_status
     
     async def shutdown(self):

@@ -1,13 +1,8 @@
-# Base image
 FROM node:23.7.0 AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Copy frontend code
-COPY /src/frontend/ .
-
-# Install dependencies and build
+COPY ./src/Frontend/ .
 RUN npm install && npm run build
 
 FROM nginx:alpine
@@ -16,8 +11,6 @@ RUN rm -rf /usr/share/nginx/html/*
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Expose frontend port
 EXPOSE 80
 
-# Serve the build directory
 CMD ["nginx", "-g", "daemon off;"]

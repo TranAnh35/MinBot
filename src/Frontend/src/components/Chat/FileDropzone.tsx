@@ -3,19 +3,29 @@ import React, { useCallback, ReactElement } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { X } from 'lucide-react';
 import { FileDropzoneProps, ChatInputProps } from '../../types/chat';
+import { useSnackbar } from 'notistack';
 
 const FileDropzone: React.FC<FileDropzoneProps> = ({ chatFiles, setChatFiles, children }) => {
-  const onDrop = useCallback((acceptedFiles: File[]) => {
+  const { enqueueSnackbar } = useSnackbar();
+
+  const onDrop = useCallback((acceptedFiles: File[], fileRejections: any[] = []) => {
     setChatFiles((prev: File[]) => {
       const newFiles = acceptedFiles.filter((newFile) =>
         !prev.some((existingFile) => existingFile.name === newFile.name && existingFile.size === newFile.size)
       );
       return [...prev, ...newFiles];
     });
-  }, [setChatFiles]);
+
+    if (fileRejections.length > 0) {
+      enqueueSnackbar('Định dạng file không được hỗ trợ', { variant: 'error' });
+    }
+  }, [setChatFiles, enqueueSnackbar]);
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     onDrop,
+    onDropRejected: (rejectedFiles) => {
+      enqueueSnackbar('Định dạng file không được hỗ trợ', { variant: 'error' });
+    },
     noClick: true,
     accept: {
       'application/pdf': ['.pdf'],

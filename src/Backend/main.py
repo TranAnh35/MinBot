@@ -7,8 +7,6 @@ from services.vector_db.database_manager import DatabaseManager
 from services.app_manager import app_manager
 from config.app_config import AppConfig
 import logging
-import sys
-import os
 
 config = AppConfig()
 

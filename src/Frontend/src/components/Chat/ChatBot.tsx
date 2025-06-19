@@ -36,7 +36,6 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(undefined);
   const [isConversationsLoading, setIsConversationsLoading] = useState(false);
   const [isConversationsLoaded, setIsConversationsLoaded] = useState(false);
-  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [isLoadingMoreHistory, setIsLoadingMoreHistory] = useState(false);
   
   // State quản lý pagination, logic hoàn toàn dựa vào backend
@@ -104,10 +103,17 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   }, [loadConversations]);
 
   useEffect(() => {
-    if (currentConversationId && !isSendingMessage) {
+    /*
+     * Khi thay đổi conversation, chỉ tải lại lịch sử nếu hiện không ở trạng thái gửi tin nhắn
+     * (tránh xoá message tạm thời vừa thêm). Không cần theo dõi isSending trong dependency –
+     * nếu đang gửi thì lần thay đổi tiếp theo (khi gửi xong) cũng không đổi conversationId,
+     * nên việc nạp lại lịch sử sẽ được thực hiện thủ công ở lần khác (ví dụ khi người dùng
+     * rời và quay lại cuộc trò chuyện).
+     */
+    if (currentConversationId && !isSending) {
       loadConversationHistory(currentConversationId, 0);
     } else if (!currentConversationId) {
-      // Reset trạng thái khi không có conversation ID
+      // Reset state khi không còn conversation
       setMessages([]);
       setHasMoreHistory(false);
       setCurrentOffset(0);
@@ -115,7 +121,7 @@ export const ChatBot: React.FC<ChatBotProps> = ({
       setIsSending(false);
       setCurrentBotMessage(null);
     }
-  }, [currentConversationId, isSendingMessage, loadConversationHistory]);
+  }, [currentConversationId, loadConversationHistory]);
   
   // Kiểm tra xem có cần tạo conversation mới sau khi load danh sách
   useEffect(() => {
@@ -174,9 +180,19 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   }, [onCloseConversations]);
 
   const handleRenameConversation = useCallback(async (conversationId: string, title: string) => {
+    // Optimistic update first
+    let prevTitle: string | undefined;
+    setConversations(prev => prev.map(c => {
+      if (c.conversation_id === conversationId) {
+        prevTitle = c.title;
+        return { ...c, title };
+      }
+      return c;
+    }));
     try {
       const success = await renameConversation(conversationId, title);
       if (success) {
+        // Ensure backend state synced
         loadConversations();
         enqueueSnackbar('Đã đổi tên cuộc trò chuyện', { 
           variant: 'success',
@@ -187,6 +203,10 @@ export const ChatBot: React.FC<ChatBotProps> = ({
         });
       }
     } catch (error) {
+      // Revert optimistic update on error if we had previous title
+      if (prevTitle !== undefined) {
+        setConversations(prev => prev.map(c => c.conversation_id === conversationId ? { ...c, title: prevTitle! } : c));
+      }
       enqueueSnackbar('Lỗi khi đổi tên cuộc trò chuyện', { 
         variant: 'error',
       });
@@ -194,51 +214,50 @@ export const ChatBot: React.FC<ChatBotProps> = ({
   }, [loadConversations, enqueueSnackbar]);
 
   const handleDeleteConversation = useCallback(async (conversationId: string) => {
+    // Optimistically remove from local list for immediate feedback
+    const prevConvs = conversations;
+    setConversations(prev => prev.filter(c => c.conversation_id !== conversationId));
     try {
       await deleteConversation(conversationId);
-      
+      // If the deleted conversation is currently open, reset UI state
       if (conversationId === currentConversationId) {
-        // Đặt lại trạng thái khi xóa conversation hiện tại
         setCurrentConversationId(undefined);
         setMessages([]);
         setHasMoreHistory(false);
         setCurrentOffset(0);
         setIsLoading(false);
         setIsTyping(false);
-        setIsSending(false); // Reset isSending state
+        setIsSending(false);
         setDisplayedContent('');
         setStoppedContent(null);
         setCurrentBotMessage(null);
       }
-      
-      // Tải lại danh sách cuộc trò chuyện
+
+      // Refresh list from backend to stay in sync
       await loadConversations();
 
-      // Kiểm tra nếu không còn conversation nào, hiển thị thông báo gợi ý
+      // Provide feedback – note: will be overwritten if no conversations later
+      enqueueSnackbar('Đã xóa cuộc trò chuyện', {
+        variant: 'success',
+      });
+
+      // Check if there are still conversations after deletion
       const updatedConversations = await listUserConversations(userId);
       if (updatedConversations.length === 0) {
-        // Chắc chắn reset hoàn toàn state UI để tránh hiện tượng duplicate
-        setCurrentConversationId(undefined); 
-        setMessages([]);
-        setIsTyping(false);
-        setIsSending(false);
-        
-        enqueueSnackbar('Đã xóa cuộc trò chuyện cuối cùng. Gõ tin nhắn để bắt đầu cuộc trò chuyện mới.', { 
+        enqueueSnackbar('Đã xóa cuộc trò chuyện cuối cùng. Gõ tin nhắn để bắt đầu cuộc trò chuyện mới.', {
           variant: 'info',
           autoHideDuration: 5000,
         });
-      } else {
-        enqueueSnackbar('Đã xóa cuộc trò chuyện', { 
-          variant: 'success',
-        });
       }
     } catch (error) {
+      // Revert optimistic removal on error
+      setConversations(prevConvs);
       console.error('Lỗi khi xóa conversation:', error);
-      enqueueSnackbar('Lỗi khi xóa cuộc trò chuyện', { 
+      enqueueSnackbar('Lỗi khi xóa cuộc trò chuyện', {
         variant: 'error',
       });
     }
-  }, [currentConversationId, loadConversations, enqueueSnackbar, userId]);
+  }, [currentConversationId, loadConversations, enqueueSnackbar, userId, conversations]);
 
   // Đọc file thành base64
   const filesToBase64 = async (files: File[]) => {
@@ -406,8 +425,14 @@ export const ChatBot: React.FC<ChatBotProps> = ({
             }
         } catch (userMsgError) {
             console.error("Lỗi khi lưu tin nhắn người dùng:", userMsgError);
-            // Không dừng luồng chính, vẫn tiếp tục gọi AI
-            // Tin nhắn vẫn hiển thị trong UI nhưng có thể không được lưu DB
+            enqueueSnackbar('Lỗi: Không thể lưu tin nhắn', { variant: 'error', autoHideDuration: 5000 });
+            // Stop further processing to avoid cascading errors
+            if (isMounted.current) {
+              setIsTyping(false);
+              setCurrentBotMessage(null);
+              setIsSending(false);
+            }
+            return;
         }
 
         // Bật trạng thái "đang nhập" 
